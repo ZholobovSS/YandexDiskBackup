@@ -1,0 +1,394 @@
+#!/usr/bin/env bash 
+
+
+# ======================
+# Script for Maintenance 
+# Version: 1.0.0
+# Author: ZholobovSS <zholobovsemyonsergeevich@gmail.com> 	 	
+# ======================
+
+
+# ==================================================
+# === Global Variables === Глобальные переменные ===
+# ==================================================
+
+
+
+# Name of current project
+# Название текущего проекта/сайта
+CURRENT_PROJECT="EXAMPLE.RU"
+
+
+# DATABASE Accesses
+# Доступы к базе данных
+DB_NAME="DB_NAME"
+DB_USER="DB_USER"
+DB_PASS="DB_PASS"
+DB_HOST="DB_HOST"
+
+
+# How much backups should save on Yandex Disk
+# Количество сохраняемых бэкапов на Яндекс Диске
+BACKUP_COUNT=3
+
+
+# Exclude .ZIP .TAR .TAR.GZ from backup (0 — NO, 1 — YES)
+# Исключать файлы .ZIP .TAR .TAR.GZ из бекапа (0 — НЕТ, 1 — ДА)
+EXCLUDE_ARCHIVES=0
+
+# Backup Frequency
+#	DAILY backup "/DAILY"
+#	MONTHLY backup "/MONTHLY"
+# Частота бэкапов
+#	Ежедневный бэкап "/DAILY"
+#	Eжемесячный бэкап "/MONTHLY"
+PERIODICITY="/MONTHLY"
+
+# Data for Yandex Disk
+# Данные для Яндекс диска
+YD_TOKEN="здесь_должен_быть_токен_яндекс_диска"
+
+
+
+# =====================================================
+# === DON'T TOUCH BELOVE === НИЖЕ НИЧЕГО НЕ ТРОГАТЬ ===
+# =====================================================
+
+
+# Path to catalog with site's files
+# Путь до папки с сайтом
+SITE_DIR="$(dirname $0)"
+
+
+# Go to one level up from SITE_DIR catalog
+# Поднимаемся на 1 уровень выше 
+ABOVE_SITE="$(dirname $SITE_DIR)"
+
+
+# Current date (dd.mm.YYYY) for backup's name and log file
+# Текущая дата формата (dd.mm.YYYY) для имен бэкапов и фйлов логов 
+CURRENT_DAY="$(date "+%d.%m.%Y")"
+
+
+# Path to log catalog
+# Путь к папке с логами
+LOG_DIR="$ABOVE_SITE/BACKUP_LOGS/$CURRENT_PROJECT"
+
+
+# Name for backup's catalog
+# Название папки с бэкапом
+GLOBAL_BACKUP_DIR="$ABOVE_SITE/ONVOLGA_BACKUP"
+
+
+# Current catalog with backup
+# Тукущая папка с бэкапом 
+CURRENT_BACKUP_DIR="$GLOBAL_BACKUP_DIR/$CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY"
+
+
+# File extension
+# Расширение для бэкапов
+FILE_SUFFIX="tar.gz"
+DB_SUFFIX="sql.gz"
+
+
+# Name of the archive of the current backup (files)
+# Название архива текущего бэкапа (файлы)
+FILES_BACKUP_NAME="$CURRENT_BACKUP_DIR/FILE.$FILE_SUFFIX"
+DB_BACKUP_NAME="$CURRENT_BACKUP_DIR/DB.$DB_SUFFIX"
+
+
+# Data for Yandex Disk
+# Данные для Яндекс диска
+YD_HEADER="Authorization: OAuth $YD_TOKEN"
+
+
+# Remove script after shutdown (0 — NO, 1 — YES)
+# Удалять скрипт после завершения работы (0 — НЕТ, 1 — ДА)
+REMOVE_SCRIPT=0
+
+
+# ERROR TYPE
+# Тип ошибки
+ERROR_TYPE=0
+
+
+# =============================
+# === FUNCTIONS === ФУНКЦИИ ===
+# =============================
+
+
+# Log
+# Логирование 
+function toLog {
+	# Current date (format %h:%m:%s) for log data (Volgograd +1 hour to Moscow time)
+	# Текущая дата формата (%h:%m:%s) для записи данных в логи (для Волгограда +1 час к МСК)
+	local current_time="$(date -d "+1 hour" "+%T")"
+
+	if [ ! -d "$LOG_DIR" ] ; then
+		mkdir -p $LOG_DIR
+	fi
+
+	if [ -n $2 ] ; then 
+		echo -e "$2$CURRENT_DAY $current_time:  $1" &>> "$LOG_DIR/$CURRENT_DAY.log"
+	else 
+		echo -e "$CURRENT_DAY $current_time:  $1" &>> "$LOG_DIR/$CURRENT_DAY.log"
+	fi
+}
+
+
+# Remove old backups from Yandex Disk
+# Удаление старых бэкапов на Яндекс Диске 
+function deleteOldBackupsOnYandex {
+	local request="$(curl -s -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources?path=app:/$CURRENT_PROJECT$PERIODICITY&fields=_embedded.items.name&offset=$BACKUP_COUNT&sort=-created")" 
+	local regex="(\"name\"[^\"]*\")([^\"]*)"
+	local remove_dir=""
+
+	if [[ $request =~ $regex ]] ; then 
+		
+		remove_dir="${BASH_REMATCH[2]}"	
+		request=$(curl -s -X DELETE -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources?path=app:/$CURRENT_PROJECT$PERIODICITY/$remove_dir") 
+		regex="error"
+
+		if [[ $request =~ $regex ]] ; then 
+			regex="(\"message\"[^\"]*\")(.*)\.\",\"des"
+
+			if [[ $request =~ $regex ]] ; then
+				toLog "${BASH_REMATCH[2]}"
+			fi	
+
+		else
+			toLog "Папка ($CURRENT_PROJECT$PERIODICITY/$remove_dir) была удалена с Яндекс диска"
+		fi
+
+		deleteOldBackupsOnYandex
+		
+	fi
+}
+
+
+# Creation catalog for current backups on Yandex Disk
+# Создание папки для Текущего бэкапа на Яндекс Диске
+function mkdirYandex {
+	while [ -n "$1" ] ; do 
+		local request="$(curl -s -X PUT -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources?path=app:/$1")"
+		local regex="(\"error\"[^\"]\")([^\"]*)"
+		
+		if [[ $request =~ $regex ]] ; then 
+
+			regex="(\"message\"[^\"]*\")(.*)\.\",\"des"
+
+			if [[ $request =~ $regex ]] ; then
+				toLog "${BASH_REMATCH[2]}"
+			fi
+
+		else 
+			toLog "На Яндекс Диске успешно создана папка ($1)" 		
+		fi
+		shift
+	done
+}
+
+
+# Request to upload files to Yandex Disk
+# Запрос на загрузку файлов в Яндекс Диск 
+function yandexUploadRequest {
+	local path_on_yd="$CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY/$1"
+	local request="$(curl -s -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources/upload?path=app:/$path_on_yd&overwrite=true")"
+	local regex="(\"href\"[^\"]\")([^\"]*)"
+
+	if [[ $request =~ $regex ]] ; then 
+		echo ${BASH_REMATCH[2]}
+	else 
+		toLog "ОШИБКА: не получена ссылка на добавление в Яндекс Диск!"		
+		ERROR_TYPE=3
+	fi
+}
+
+
+# Upload data on Yandex Disk
+# Загрузка файла на Яндекс диск 
+function yandexUpload {
+	local backup_basename="$(basename $1)"
+	local upload_url="$(yandexUploadRequest $backup_basename)"
+
+	if [ $ERROR_TYPE -ne 3 ] ; then 
+		toLog "Начата загрузка бэкапа на Яндекс Диск ($CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY/$backup_basename)"
+		curl -T "$1.$2" -H "$YD_HEADER" "$upload_url"
+
+		if [ $? -eq 0 ] ; then 
+			toLog "Бэкап загружен на Яндекс Диск ($CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY/$backup_basename)"	
+			yandexReturnSuffix "$1" "$2"
+		else 
+			toLog "ОШИБКА: бэкап НЕ БЫЛ загружен на Яндекс Диск ($CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY/$backup_basename)"	
+		fi
+
+	fi
+}
+
+
+# Return file extension for upload's files
+# Возвращаем расширения загруженным файлам 
+function yandexReturnSuffix {
+	local backup_basename="$(basename $1)"
+	local from_path="$CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY/$backup_basename"
+	local to_path="$CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY/$backup_basename.$2"
+	curl -s -X POST -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources/move?from=app:/$from_path&path=app:/$to_path&overwrite=true"
+}
+
+
+# Create catalog for file's backup 
+# Создаем каталог для файловых бэкапов
+function mkdirLocal {
+	if [ -d  "$1" ] ; then
+		toLog "Папка для бэкапов ($1) уже существует"
+	else 
+
+		mkdir -p "$1"
+
+		if [ -d "$1" ] ; then
+			toLog "Папка для бэкапа ($1) успешно создана"
+		else
+			toLog "ОШИБКА: папка для бэкапа ($1) НЕ СОЗДАНА!"
+			ERROR_TYPE=1
+		fi
+	fi
+}
+
+
+# File's backup MAIN
+# 	$1 - name of file's backup
+#   $2 - site dir 
+# Главный файловый бэкап
+# 	$1 - имя файлового бэкапа
+#   $2 - каталог сайта  
+function fileBackup {
+	if [ -f "$1" ] ; then 
+		toLog "Файловый бэкап ($1) уже был создан"
+	else 
+
+		if [ $EXCLUDE_ARCHIVES -eq 0 ] ; then 
+			tar -zcf "$1" "$2"
+		else 
+			tar -zcf "$1" "$2" --exclude='*.zip' --exclude='*.tar*' --exclude='*.tar.gz*' --exclude='*.enc*' --exclude='*/cache/*' --exclude='*.jpa*'
+		fi 
+			
+		if [ $? -gt 1 ] ; then
+
+			toLog "ОШИБКА: при создании бэкапа *.TAR.GZ Предпринята попытка создать бэкап *.TAR"
+			removeLocalBackup "$FILES_BACKUP_NAME"
+
+			FILE_SUFFIX="tar"
+			FILES_BACKUP_NAME="$CURRENT_BACKUP_DIR/FILE.$FILE_SUFFIX"
+
+			if [ $EXCLUDE_ARCHIVES -eq 0 ] ; then
+				tar -cf "$FILES_BACKUP_NAME" "$2"
+			else 
+				tar -cf "$FILES_BACKUP_NAME" "$2" --exclude='*.zip' --exclude='*.tar*' --exclude='*.tar.gz*' --exclude='*.enc*' --exclude='*/cache/*' --exclude='*.jpa*'
+			fi
+
+			if [ $? -gt 1 ] ; then
+				toLog "ОШИБКА: файловый бэкап не создан! Проверьте свободное место!"
+				removeLocalBackup "$GLOBAL_BACKUP_DIR"
+				ERROR_TYPE=1
+			elif [ -f  "$FILES_BACKUP_NAME" ] ; then
+				toLog "Файловый бэкап ($1) успешно создан"
+			else 
+				toLog "ОШИБКА: файловый бэкап не создан!"
+				ERROR_TYPE=1
+			fi
+		elif [ -f  "$1" ] ; then
+			toLog "Файловый бэкап ($1) успешно создан"
+		else 
+			toLog "ОШИБКА: файловый бэкап не создан!"
+			ERROR_TYPE=1
+		fi
+	fi
+
+	if [ $ERROR_TYPE -ne 0 ] ; then 
+		toLog "СКРИПТ АВАРИЙНО ЗАВЕРШИЛ РАБОТУ. ПРОИЗОШЛА ОШИБКА ПРИ СОЗДАНИИ БЭКАПА ФАЙЛОВ"
+	fi
+}
+
+
+# Create DB backup
+# 	$1 - DB user name
+# 	$2 - DB host
+# 	$3 - DB pass
+#   $4 - DB name
+# Создание бэкапа Базды Данных
+# 	$1 - Имя пользователя БД
+# 	$2 - Хост БД
+# 	$3 - Пароль БД
+#   $4 - Имя БД
+function dbBackup {
+	if [ -f "$DB_BACKUP_NAME" ] ; then 
+		toLog "Бэкап БД ($DB_BACKUP_NAME) уже был создан"
+	else
+
+		mysqldump -u "$1" -h "$2" -p"$3" "$4" | gzip -c > "$DB_BACKUP_NAME"
+
+		if [ $? -ne 0 ] ; then
+			toLog "ОШИБКА: бэкап БД не создан! Проверьте свободное место!"
+			removeLocalBackup "$GLOBAL_BACKUP_DIR"
+			ERROR_TYPE=2
+		elif [ -f  "$DB_BACKUP_NAME" ] ; then
+			toLog "Бэкап БД ($DB_BACKUP_NAME) успешно создан"
+		else 
+			toLog "ОШИБКА: бэкап БД не создан!"
+			ERROR_TYPE=2
+		fi
+
+	fi
+
+	if [ $ERROR_TYPE -ne 0 ] ; then 
+		toLog "СКРИПТ АВАРИЙНО ЗАВЕРШИЛ РАБОТУ. ПРОИЗОШЛА ОШИБКА ПРИ СОЗДАНИИ БЭКАПА БД"
+	fi
+}
+
+
+# Remove backups from server
+# Удалить бэкапы на сервере 
+function removeLocalBackup {
+	if [ -d "$1" ] || [ -f "$1" ] ; then
+		rm -rf "$1"
+		removeLocalBackup "$1"
+	else 
+		toLog "Папка с локальными бэкапами ($1) успешно удалена"
+	fi
+}
+
+
+function main {
+	toLog "=== Зауск скрипта ===\n" "\n"
+
+	mkdirLocal "$CURRENT_BACKUP_DIR"
+
+	if [ $ERROR_TYPE -eq 0 ] ; then 
+		fileBackup "$FILES_BACKUP_NAME" "$SITE_DIR"
+	fi
+	
+	if [ $ERROR_TYPE -eq 0 ] ; then 
+		dbBackup "$DB_USER" "$DB_HOST" "$DB_PASS" "$DB_NAME"
+	fi
+	
+	if [ $ERROR_TYPE -eq 0 ] ; then
+		mkdirYandex "$CURRENT_PROJECT" "$CURRENT_PROJECT$PERIODICITY" "$CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY"
+	fi
+
+	if [ $ERROR_TYPE -eq 0 ] ; then
+		yandexUpload "${DB_BACKUP_NAME%.$DB_SUFFIX}" "$DB_SUFFIX"
+		yandexUpload "${FILES_BACKUP_NAME%.$FILE_SUFFIX}" "$FILE_SUFFIX"
+	fi
+
+	removeLocalBackup "$GLOBAL_BACKUP_DIR"
+
+	if [ $ERROR_TYPE -eq 0 ] ; then
+		deleteOldBackupsOnYandex	
+	fi
+
+	if [ $ERROR_TYPE -eq 0 ] ; then
+		toLog "Процесс резервного копирования прошел успешно!"	
+	fi
+}
+
+main

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash 
+
+# Данные для Яндекс диска
+YD_TOKEN="здесь_должен_быть_токен_яндекс_диска"
+YD_HEADER="Authorization: OAuth $YD_TOKEN"
+
+
+function download_from_yandex_disk {
+	local base_name="$(basename $1)"
+	local download_link=$(curl -s -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources/download?path=app:/$1&fields=href")
+
+	local regex="error"
+	
+	if [[ $download_link =~ $regex ]] ; then 
+
+		regex="(\"message\"[^\"]*\")([^\"]*)"
+
+		if [[ $download_link =~ $regex ]] ; then
+			echo "${BASH_REMATCH[2]}"
+		fi
+	else
+
+		regex="(\"href\"[^\"]\")([^\"]*)"
+		
+		if [[ $download_link =~ $regex ]] ; then 
+			download_link=${BASH_REMATCH[2]}
+			curl -H "$YD_HEADER" -L -o "$base_name" "$download_link"
+		fi
+	fi
+}
+
+
+if [ -n "$1" ] ; then
+	download_from_yandex_disk "$1"
+else 
+	echo 'Please Enter "FILENAME"'
+fi
+

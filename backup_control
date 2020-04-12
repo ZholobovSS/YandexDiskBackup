@@ -1,0 +1,60 @@
+#!/usr/bin/env bash 
+
+
+# Данные для Яндекс диска
+YD_TOKEN="здесь_должен_быть_токен_яндекс_диска"
+YD_HEADER="Authorization: OAuth $YD_TOKEN"
+
+
+# Папка, в которой запускается скрипт
+CURRENT_DIR="$(dirname $0)"
+
+
+# Путь к файлу на Яндекс Диске
+PROJECT_NAME="EXAMPLE.RU"
+PATH_TO_FILE="$PROJECT_NAME/backup_script_monthly"
+
+
+# Путь к локальному файлу
+LOCAL_PATH_TO_FILE="$CURRENT_DIR/$(basename $PATH_TO_FILE)"
+
+
+function download_from_yandex_disk {
+	local base_name="$(basename $1)"
+	local download_link=$(curl -s -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources/download?path=app:/$1&fields=href")
+	local regex="error"
+
+	
+	if [[ $download_link =~ $regex ]] ; then 
+
+		regex="(\"message\"[^\"]*\")([^\"]*)"
+
+		if [[ $download_link =~ $regex ]] ; then
+			echo "${BASH_REMATCH[2]}"
+		fi
+
+	else
+
+		regex="(\"href\"[^\"]\")([^\"]*)"
+		
+		if [[ $download_link =~ $regex ]] ; then 
+			download_link=${BASH_REMATCH[2]}
+			curl -s -H "$YD_HEADER" -L -o "$CURRENT_DIR/$base_name" "$download_link"
+		fi
+
+	fi
+}
+
+
+function remove_backup_script {
+	rm -rf "$1"
+}
+
+
+download_from_yandex_disk "$PATH_TO_FILE"
+
+chmod +x "$LOCAL_PATH_TO_FILE"
+source "$LOCAL_PATH_TO_FILE"
+
+remove_backup_script "$LOCAL_PATH_TO_FILE"
+
