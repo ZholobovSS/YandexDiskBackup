@@ -4,6 +4,16 @@
 YD_TOKEN="здесь_должен_быть_токен_яндекс_диска"
 YD_HEADER="Authorization: OAuth $YD_TOKEN"
 
+error_flag=0
+archive_number=
+path_on_ya_disk=
+extract_index=1
+
+# 1 — .sql.gz
+# 2 — .tar
+# 3 — .tar.gz
+# 4 — multiple tar
+extract_type=
 
 function download_from_yandex_disk {
 	local base_name="$(basename $1)"
@@ -17,6 +27,7 @@ function download_from_yandex_disk {
 
 		if [[ $download_link =~ $regex ]] ; then
 			echo "${BASH_REMATCH[2]}"
+			error_flag=1
 		fi
 	else
 
@@ -29,10 +40,69 @@ function download_from_yandex_disk {
 	fi
 }
 
+function extract_archive {
+	local base_name="$(basename $1)"
+	case $extract_type in
+		1) gunzip "$base_name"
+			;;
+		2) tar -xf "$base_name"
+			rm -rf "$base_name"
+			;;
+		3) tar -xzf "$base_name" 
+			rm -rf "$base_name"
+			;;
+		4) cat "${base_name%.*}"* | tar -xif - 
+			rm -rf "${base_name%.*}"*
+			;;
+	esac
+}
 
-if [ -n "$1" ] ; then
-	download_from_yandex_disk "$1"
+if [ $# -eq 1 ] ; then 
+
+	path_on_ya_disk="$1"
+	download_from_yandex_disk "$path_on_ya_disk"
+
+elif [ $# -eq 3 ] ; then
+	while [ -n "$1" ] ; do
+		
+		case "$1" in
+			-p) shift
+				path_on_ya_disk="$1"
+				;;
+			-m) archive_number=1
+				;;
+		esac
+		shift		
+	done
+	if [ -n $path_on_ya_disk ] ; then 
+		while [ $error_flag -ne 1 ] ; do
+			download_from_yandex_disk "$path_on_ya_disk.$archive_number"
+			archive_number=$((archive_number + 1))
+		done
+		archive_number=1
+		path_on_ya_disk="$path_on_ya_disk.$archive_number"
+	else 
+		echo "Erro: miss path parameter '-p' "
+	fi
 else 
-	echo 'Please Enter "FILENAME"'
+	echo 'Please enter the correct number of parameters. For exapmle: download_ya "path_on_ya_disk" or download_ya -p "path_on_ya_disk" -m'
 fi
+
+
+regexs=(".*(\.sql\.gz)$" ".*(\.tar)$" ".*(\.tar\.gz)$")
+for i in "${regexs[@]}" ; do 
+	if [[ $path_on_ya_disk =~ $i ]] ; then
+		echo "$extract_index" 
+		extract_type=$extract_index
+		extract_archive "$path_on_ya_disk"
+	fi
+	extract_index=$((extract_index + 1))
+done
+
+if [ -n $archive_number ] ; then
+	extract_type=4
+	extract_archive "$path_on_ya_disk"
+fi
+
+
 

@@ -44,10 +44,13 @@ EXCLUDE_ARCHIVES=0
 #	Eжемесячный бэкап "/MONTHLY"
 PERIODICITY="/MONTHLY"
 
+# Tape length in Megabytes (example: 100). If 0 then archive will not be divided into parts
+# Размер разбиения архва в Мегабайтах (например: 100). Если 0, то архив не будет рабит на части
+TAPE_LENGTH=0
+
 # Data for Yandex Disk
 # Данные для Яндекс диска
 YD_TOKEN="здесь_должен_быть_токен_яндекс_диска"
-
 
 
 # =====================================================
@@ -136,8 +139,8 @@ function toLog {
 }
 
 
-# Remove old backups from Yandex Disk
-# Удаление старых бэкапов на Яндекс Диске 
+# Remove old backups from Yandex.Disk
+# Удаление старых бэкапов на Яндекс.Диске 
 function deleteOldBackupsOnYandex {
 	local request="$(curl -s -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources?path=app:/$CURRENT_PROJECT$PERIODICITY&fields=_embedded.items.name&offset=$BACKUP_COUNT&sort=-created")" 
 	local regex="(\"name\"[^\"]*\")([^\"]*)"
@@ -166,8 +169,8 @@ function deleteOldBackupsOnYandex {
 }
 
 
-# Creation catalog for current backups on Yandex Disk
-# Создание папки для Текущего бэкапа на Яндекс Диске
+# Creation catalog for current backups on Yandex.Disk
+# Создание папки для Текущего бэкапа на Яндекс.Диске
 function mkdirYandex {
 	while [ -n "$1" ] ; do 
 		local request="$(curl -s -X PUT -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources?path=app:/$1")"
@@ -189,8 +192,8 @@ function mkdirYandex {
 }
 
 
-# Request to upload files to Yandex Disk
-# Запрос на загрузку файлов в Яндекс Диск 
+# Request to upload files to Yandex.Disk
+# Запрос на загрузку файлов в Яндекс.Диск 
 function yandexUploadRequest {
 	local path_on_yd="$CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY/$1"
 	local request="$(curl -s -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources/upload?path=app:/$path_on_yd&overwrite=true")"
@@ -205,8 +208,8 @@ function yandexUploadRequest {
 }
 
 
-# Upload data on Yandex Disk
-# Загрузка файла на Яндекс диск 
+# Upload data on Yandex.Disk
+# Загрузка файла на Яндекс.Диск 
 function yandexUpload {
 	local backup_basename="$(basename $1)"
 	local upload_url="$(yandexUploadRequest $backup_basename)"
@@ -255,6 +258,34 @@ function mkdirLocal {
 }
 
 
+# Dividing the archive into parts and upload parts on Yandex.Disk
+# Деление архива на части. Загрузка частей на Яндекс.Диск
+function createNewVolumeScript {
+cat <<EOF > "$GLOBAL_BACKUP_DIR/new-volume.sh"
+
+next_number=\$(cat $GLOBAL_BACKUP_DIR/volno)
+next_volume_name='$1.'\$next_number
+mv "$1" \$next_volume_name
+
+upload_url=''
+new_backup_name="${FILES_BACKUP_NAME%.$FILE_SUFFIX}"
+base_name="\$(basename \$new_backup_name)"
+path_on_yd="$CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY/\$base_name"
+request="\$(curl -s -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources/upload?path=app:/\$path_on_yd&overwrite=true")"
+
+upload_url=\$(echo \$request|cut -d',' -f2|awk -F'":"' '{print \$2}'|cut -d'"' -f1)
+
+curl --progress-bar -T "\$next_volume_name" -H "$YD_HEADER" "\$upload_url"
+
+from_path="$CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY/\$base_name"
+to_path="$CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY/\$base_name.$FILE_SUFFIX.\$next_number"
+curl -X POST -H "$YD_HEADER" "https://cloud-api.yandex.net:443/v1/disk/resources/move?from=app:/\$from_path&path=app:/\$to_path&overwrite=true"
+
+EOF
+chmod +x "$GLOBAL_BACKUP_DIR/new-volume.sh"
+}
+
+
 # File's backup MAIN
 # 	$1 - name of file's backup
 #   $2 - site dir 
@@ -262,45 +293,70 @@ function mkdirLocal {
 # 	$1 - имя файлового бэкапа
 #   $2 - каталог сайта  
 function fileBackup {
-	if [ -f "$1" ] ; then 
+	if [ -f "$1-sdfsdf" ] ; then 
 		toLog "Файловый бэкап ($1) уже был создан"
 	else 
-
-		if [ $EXCLUDE_ARCHIVES -eq 0 ] ; then 
-			tar -zcf "$1" "$2"
-		else 
-			tar -zcf "$1" "$2" --exclude='*.zip' --exclude='*.tar*' --exclude='*.tar.gz*' --exclude='*.enc*' --exclude='*/cache/*' --exclude='*.jpa*'
-		fi 
-			
-		if [ $? -gt 1 ] ; then
-
-			toLog "ОШИБКА: при создании бэкапа *.TAR.GZ Предпринята попытка создать бэкап *.TAR"
-			removeLocalBackup "$FILES_BACKUP_NAME"
+		
+		if [ $TAPE_LENGTH -ne 0 ] ; then 
 
 			FILE_SUFFIX="tar"
 			FILES_BACKUP_NAME="$CURRENT_BACKUP_DIR/FILE.$FILE_SUFFIX"
 
-			if [ $EXCLUDE_ARCHIVES -eq 0 ] ; then
-				tar -cf "$FILES_BACKUP_NAME" "$2"
-			else 
-				tar -cf "$FILES_BACKUP_NAME" "$2" --exclude='*.zip' --exclude='*.tar*' --exclude='*.tar.gz*' --exclude='*.enc*' --exclude='*/cache/*' --exclude='*.jpa*'
-			fi
+			createNewVolumeScript "$FILES_BACKUP_NAME"
 
+			if [ $EXCLUDE_ARCHIVES -eq 0 ] ; then 
+				tar -c -M --tape-length=${TAPE_LENGTH}M --volno-file="$GLOBAL_BACKUP_DIR/volno" --new-volume-script="$GLOBAL_BACKUP_DIR/new-volume.sh" -f "$FILES_BACKUP_NAME" "$2"
+				$GLOBAL_BACKUP_DIR/new-volume.sh 
+			else 
+				tar -c -M --tape-length=${TAPE_LENGTH}M --volno-file="$GLOBAL_BACKUP_DIR/volno" --new-volume-script="$GLOBAL_BACKUP_DIR/new-volume.sh" -f "$FILES_BACKUP_NAME" "$2"  --exclude='*.zip' --exclude='*.tar*' --exclude='*.tar.gz*' --exclude='*.enc*' --exclude='*/cache/*' --exclude='*.jpa*'
+				$GLOBAL_BACKUP_DIR/new-volume.sh
+			fi 
+			
 			if [ $? -gt 1 ] ; then
 				toLog "ОШИБКА: файловый бэкап не создан! Проверьте свободное место!"
 				removeLocalBackup "$GLOBAL_BACKUP_DIR"
 				ERROR_TYPE=1
-			elif [ -f  "$FILES_BACKUP_NAME" ] ; then
+			else 
+				toLog "Файловый бэкап ($1) успешно создан"
+			fi
+
+		else 
+			if [ $EXCLUDE_ARCHIVES -eq 0 ] ; then 
+				tar -zcf "$1" "$2"
+			else 
+				tar -zcf "$1" "$2" --exclude='*.zip' --exclude='*.tar*' --exclude='*.tar.gz*' --exclude='*.enc*' --exclude='*/cache/*' --exclude='*.jpa*'
+			fi 
+			
+			if [ $? -gt 1 ] ; then
+
+				toLog "ОШИБКА: при создании бэкапа *.TAR.GZ Предпринята попытка создать бэкап *.TAR"
+				removeLocalBackup "$FILES_BACKUP_NAME"
+
+				FILE_SUFFIX="tar"
+				FILES_BACKUP_NAME="$CURRENT_BACKUP_DIR/FILE.$FILE_SUFFIX"
+
+				if [ $EXCLUDE_ARCHIVES -eq 0 ] ; then
+					tar -cf "$FILES_BACKUP_NAME" "$2"
+				else 
+					tar -cf "$FILES_BACKUP_NAME" "$2" --exclude='*.zip' --exclude='*.tar*' --exclude='*.tar.gz*' --exclude='*.enc*' --exclude='*/cache/*' --exclude='*.jpa*'
+				fi
+
+				if [ $? -gt 1 ] ; then
+					toLog "ОШИБКА: файловый бэкап не создан! Проверьте свободное место!"
+					removeLocalBackup "$GLOBAL_BACKUP_DIR"
+					ERROR_TYPE=1
+				elif [ -f  "$FILES_BACKUP_NAME" ] ; then
+					toLog "Файловый бэкап ($1) успешно создан"
+				else 
+					toLog "ОШИБКА: файловый бэкап не создан!"
+					ERROR_TYPE=1
+				fi
+			elif [ -f  "$1" ] ; then
 				toLog "Файловый бэкап ($1) успешно создан"
 			else 
 				toLog "ОШИБКА: файловый бэкап не создан!"
 				ERROR_TYPE=1
 			fi
-		elif [ -f  "$1" ] ; then
-			toLog "Файловый бэкап ($1) успешно создан"
-		else 
-			toLog "ОШИБКА: файловый бэкап не создан!"
-			ERROR_TYPE=1
 		fi
 	fi
 
@@ -363,6 +419,10 @@ function main {
 
 	mkdirLocal "$CURRENT_BACKUP_DIR"
 
+	if [ $ERROR_TYPE -eq 0 ] ; then
+		mkdirYandex "$CURRENT_PROJECT" "$CURRENT_PROJECT$PERIODICITY" "$CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY"
+	fi
+
 	if [ $ERROR_TYPE -eq 0 ] ; then 
 		fileBackup "$FILES_BACKUP_NAME" "$SITE_DIR"
 	fi
@@ -370,14 +430,13 @@ function main {
 	if [ $ERROR_TYPE -eq 0 ] ; then 
 		dbBackup "$DB_USER" "$DB_HOST" "$DB_PASS" "$DB_NAME"
 	fi
-	
-	if [ $ERROR_TYPE -eq 0 ] ; then
-		mkdirYandex "$CURRENT_PROJECT" "$CURRENT_PROJECT$PERIODICITY" "$CURRENT_PROJECT$PERIODICITY/$CURRENT_DAY"
-	fi
 
 	if [ $ERROR_TYPE -eq 0 ] ; then
+
 		yandexUpload "${DB_BACKUP_NAME%.$DB_SUFFIX}" "$DB_SUFFIX"
-		yandexUpload "${FILES_BACKUP_NAME%.$FILE_SUFFIX}" "$FILE_SUFFIX"
+		if [ $TAPE_LENGTH -eq 0 ] ; then
+			yandexUpload "${FILES_BACKUP_NAME%.$FILE_SUFFIX}" "$FILE_SUFFIX"
+		fi
 	fi
 
 	removeLocalBackup "$GLOBAL_BACKUP_DIR"
